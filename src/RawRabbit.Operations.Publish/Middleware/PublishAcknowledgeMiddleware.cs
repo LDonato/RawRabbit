@@ -64,6 +64,7 @@ namespace RawRabbit.Operations.Publish.Middleware
 
 			await Next.InvokeAsync(context, token);
 			await ackTcs.Task;
+	
 		}
 
 		protected virtual ulong GetNextSequence(IModel channel)
@@ -73,14 +74,15 @@ namespace RawRabbit.Operations.Publish.Middleware
 				c => c.NextPublishSeqNo,
 				(c, seq) =>
 				{
-					if (c.NextPublishSeqNo == 1 && seq != 2)
+					return c.NextPublishSeqNo;
+					/*if (c.NextPublishSeqNo == 1 && seq != 2)
 					{
 						return c.NextPublishSeqNo;
 					}
 					seq++;
 					return seq > c.NextPublishSeqNo
 						? seq
-						: c.NextPublishSeqNo;
+						: c.NextPublishSeqNo;*/
 				});
 		}
 

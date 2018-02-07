@@ -1,64 +1,105 @@
-﻿using System.Collections.Generic;
+﻿﻿using System;
 using System.IO;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
-using RawRabbit.Configuration;
-using RawRabbit.Enrichers.GlobalExecutionId;
-using RawRabbit.Enrichers.MessageContext;
-using RawRabbit.Enrichers.MessageContext.Context;
-using RawRabbit.Instantiation;
-using RawRabbit.Messages.Sample;
+
 using Serilog;
 
-namespace RawRabbit.ConsoleApp.Sample
+using RawRabbit;
+using RawRabbit.Logging;
+
+using System.Threading.Tasks;
+
+using System.Collections.Generic;
+
+namespace RawRabbitTest
 {
-	public class Program
-	{
-		private static IBusClient _client;
+    class Program
+    {
+        static ILogger logger;
 
-		public static void Main(string[] args)
-		{
-			RunAsync().GetAwaiter().GetResult();
-		}
+        static void Main(string[] args)
+        {
+            
+            Serilog.LoggerConfiguration loggerConfiguration = new Serilog.LoggerConfiguration() 
+                .MinimumLevel.Debug()
+                .WriteTo.RollingFile(Path.Combine(Directory.GetCurrentDirectory(), "Logs/log-{Date}.txt"));
+            logger = loggerConfiguration.CreateLogger();
+            
+            /*Serilog.LoggerConfiguration loggerConfiguration2 = new Serilog.LoggerConfiguration() 
+                .MinimumLevel.Debug()
+                .WriteTo.RollingFile(Path.Combine(Directory.GetCurrentDirectory(), "Logs/rawRabbit-{Date}.txt"));
+            ILogger logger2 = loggerConfiguration2.CreateLogger();*/
 
-		public static async Task RunAsync()
-		{
-			Log.Logger = new LoggerConfiguration()
-				.WriteTo.LiterateConsole()
-				.CreateLogger();
+            IBusClient client = RawRabbit.Instantiation.RawRabbitFactory.CreateSingleton();
+            //Log.Logger = logger2;
+            client.SubscribeAsync<List<Message>>(
+               async (message) => {
+                    logger.Information("received data {0}.Forwarding ...", message[0].cnt);
+                    await client.PublishAsync(message,
+                        ctx => ctx.UsePublishConfiguration(
+                            cfg => cfg.OnDeclaredExchange(exchange => exchange.WithName("queue2"))
+                        ).UsePublishAcknowledge(false));
+                },
+                ctx => ctx.UseSubscribeConfiguration(
+                    cfg => cfg.OnDeclaredExchange(exchange => exchange.WithName("queue1")
+                )
+            ));
 
-			_client = RawRabbitFactory.CreateSingleton(new RawRabbitOptions
-			{
-				ClientConfiguration = new ConfigurationBuilder()
-					.SetBasePath(Directory.GetCurrentDirectory())
-					.AddJsonFile("rawrabbit.json")
-					.Build()
-					.Get<RawRabbitConfiguration>(),
-				Plugins = p => p
-					.UseGlobalExecutionId()
-					.UseMessageContext<MessageContext>()
-			});
+            client.SubscribeAsync<List<Message>>(
+                async (message) => {
+                    logger.Information("received forwarded data {0}. ...", message[0].cnt);
+                },
+                ctx => ctx.UseSubscribeConfiguration(
+                    cfg => cfg.OnDeclaredExchange(exchange => exchange.WithName("queue2")
+                )
+            ));
 
-			await _client.SubscribeAsync<ValuesRequested, MessageContext>((requested, ctx) => ServerValuesAsync(requested, ctx));
-			await _client.RespondAsync<ValueRequest, ValueResponse>(request => SendValuesThoughRpcAsync(request));
-		}
+            List<Publisher> publishers = new List<Publisher>();
 
-		private static Task<ValueResponse> SendValuesThoughRpcAsync(ValueRequest request)
-		{
-			return Task.FromResult(new ValueResponse
-			{
-				Value = $"value{request.Value}"
-			});
-		}
+            for(int i = 0; i < 100; i++)
+            {
+                publishers.Add(new Publisher(i));
+            }
 
-		private static Task ServerValuesAsync(ValuesRequested message, MessageContext ctx)
-		{
-			var values = new List<string>();
-			for (var i = 0; i < message.NumberOfValues; i++)
-			{
-				values.Add($"value{i}");
-			}
-			return _client.PublishAsync(new ValuesCalculated { Values = values });
-		}
-	}
+            while(true)
+            {
+                foreach (Publisher p in publishers)
+                {
+                    List<Message> toBePublished = p.GetMessage();
+                    logger.Information("Publisher {0} is publishing message {1}", p.id, toBePublished[0].cnt);
+                    client.PublishAsync(toBePublished,
+                        ctx => ctx.UsePublishConfiguration(
+                            cfg => cfg.OnDeclaredExchange(exchange => exchange.WithName("queue1"))
+                        ));
+                }
+            }
+        }
+
+        public class Message
+        {
+            static public int Counter {get;set;}
+            public int cnt;
+            public Message()
+            {
+                Counter ++;
+                cnt = Counter;
+            }
+        }
+
+        public class Publisher
+        {
+            public int id;
+
+            public Publisher(int id) {this.id = id;}
+            public List<Message> GetMessage()
+            {
+                List<Message>ret = new List<Message>();
+                for(int i = 0; i < 10; i++)
+                {
+                    ret.Add(new Message());
+                }
+                return ret;
+            }
+        }    
+
+    }
 }
